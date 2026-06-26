@@ -29,6 +29,7 @@ class AdditiveAttention(nn.Module):
         d_proj = torch.einsum("bd,ed->be", decoder_output, self.W_decoder).unsqueeze(1)
 
         # u_i = v^T * tanh(W1@e + W2@d_i)
+        # (b, n, d) x (1, d) -> (b, n, 1) -> (b, n)
         u = torch.einsum(
             "bne,oe->bno",
             torch.tanh(e_proj + d_proj),
