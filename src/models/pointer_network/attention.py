@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 
+from src.models.transformer.layers import init_uniform_
+
 
 class AdditiveAttention(nn.Module):
     def __init__(
@@ -8,21 +10,12 @@ class AdditiveAttention(nn.Module):
         hidden_size: int,
     ):
         super().__init__()
-        self.encoder_proj = nn.Linear(
-            in_features=hidden_size,
-            out_features=hidden_size,
-            bias=False,
-        )
-        self.decoder_proj = nn.Linear(
-            in_features=hidden_size,
-            out_features=hidden_size,
-            bias=False,
-        )
-        self.score_projection = nn.Linear(
-            in_features=hidden_size,
-            out_features=1,
-            bias=False,
-        )
+        self.W_encoder = nn.Parameter(torch.empty(hidden_size, hidden_size))
+        self.W_decoder = nn.Parameter(torch.empty(hidden_size, hidden_size))
+        self.W_score = nn.Parameter(torch.empty(1, hidden_size))
+
+        for param in self.parameters():
+            init_uniform_(param, param.size(-1))
 
     def forward(
         self,
@@ -31,12 +24,16 @@ class AdditiveAttention(nn.Module):
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
 
-        # e = (e1, ..., eN), where N is the source sequence length
-        e_proj = self.encoder_proj(encoder_output_list)
-        d_i_proj = self.decoder_proj(decoder_output).unsqueeze(1)
+        # Projections: b=batch, n=source len, d=hidden, e=proj hidden, o=1
+        e_proj = torch.einsum("bnd,ed->bne", encoder_output_list, self.W_encoder)
+        d_proj = torch.einsum("bd,ed->be", decoder_output, self.W_decoder).unsqueeze(1)
 
         # u_i = v^T * tanh(W1@e + W2@d_i)
-        u = self.score_projection(torch.tanh(e_proj + d_i_proj)).squeeze(1)
+        u = torch.einsum(
+            "bne,oe->bno",
+            torch.tanh(e_proj + d_proj),
+            self.W_score,
+        ).squeeze(-1)
         if mask is not None:
             u = u.masked_fill(mask, torch.finfo(u.dtype).min)
         return u
