@@ -88,7 +88,44 @@ class AttentionLayer(nn.Module):
         self.ff = SkipConnection(FeedForward(d_h, d_ff))
         self.norm2 = Normalization(d_h, normalization)
 
-    def forward(self, h: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        h: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         # h: (B, n, d_h)
-        h_hat = self.norm1(self.mha(h))
+        h_hat = self.norm1(self.mha(h, mask=mask))
         return self.norm2(self.ff(h_hat))
+
+
+class GraphAttentionEncoder(nn.Module):
+    def __init__(
+        self,
+        n_layers: int,
+        n_heads: int,
+        d_h: int,
+        d_ff: int,
+        normalization: str = "batch",
+    ) -> None:
+        super().__init__()
+        self.layers = nn.ModuleList(
+            modules=[
+                AttentionLayer(
+                    n_heads=n_heads,
+                    d_h=d_h,
+                    d_ff=d_ff,
+                    normalization=normalization,
+                )
+                for _ in range(n_layers)
+            ]
+        )
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        for layer in self.layers:
+            h = layer(h, mask=mask)
+        h_bar = h.mean(dim=1)
+        return h, h_bar

@@ -10,8 +10,6 @@ def init_uniform_(param: torch.Tensor, d: int) -> None:
 
 
 class FeedForward(nn.Module):
-    """Node-wise feed-forward sublayer (eq. 15)."""
-
     def __init__(
         self,
         hidden_dim: int,
@@ -52,13 +50,13 @@ class SkipConnection(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
+        *args,
+        **kwargs,
     ) -> torch.Tensor:
-        return x + self.module(x)
+        return x + self.module(x, *args, **kwargs)
 
 
 class Normalization(nn.Module):
-    """Batch normalization with learnable affine parameters (eq. 16)."""
-
     def __init__(
         self,
         hidden_dim: int,

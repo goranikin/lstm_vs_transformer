@@ -6,88 +6,50 @@ import torch.nn.functional as F
 from torch import nn
 
 from configs.am_config import AMModelConfig
-from src.data.registry import (
-    ProblemName,
-    ProblemSpec,
-    compute_cost,
-    make_state,
-    max_decode_steps,
+from src.models.transformer.attention_layer import (
+    GraphAttentionEncoder,
+    MultiHeadAttention,
 )
-from src.models.transformer.attention_layer import AttentionLayer, MultiHeadAttention
 from src.models.transformer.layers import init_uniform_
 
 DecodeType = Literal["greedy", "sampling"]
-
-
-class GraphAttentionEncoder(nn.Module):
-    def __init__(
-        self,
-        n_layers: int,
-        n_heads: int,
-        d_h: int,
-        d_ff: int,
-        normalization: str = "batch",
-    ) -> None:
-        super().__init__()
-        self.layers = nn.ModuleList(
-            modules=[
-                AttentionLayer(
-                    n_heads=n_heads,
-                    d_h=d_h,
-                    d_ff=d_ff,
-                    normalization=normalization,
-                )
-                for _ in range(n_layers)
-            ]
-        )
-
-    def forward(self, h: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        for layer in self.layers:
-            h = layer(h)
-        h_bar = h.mean(dim=1)
-        return h, h_bar
+ProblemType = Literal["tsp", "mis"]
 
 
 class AttentionModel(nn.Module):
-    """
-    Attention based encoder-decoder for routing problems.
-
-    Policy factorization (eq. 1):
-        p_θ(π|s) = ∏_t p_θ(π_t | s, π_{1:t-1})
-    """
+    """Attention encoder-decoder for new_data TSP and MIS batches."""
 
     def __init__(
-        self, problem: ProblemSpec, config: AMModelConfig | None = None
+        self,
+        config: AMModelConfig | None = None,
+        default_problem: ProblemType | None = None,
     ) -> None:
         super().__init__()
-        self.problem = problem
         self.config = config or AMModelConfig()
+        self.default_problem = default_problem
         d_h = self.config.d_h
 
-        self.allow_split = problem.allow_split
+        self.tsp_node_embed = nn.Linear(in_features=2, out_features=d_h)
+        self.tsp_node_bias = nn.Parameter(torch.zeros(d_h))
+        init_uniform_(self.tsp_node_embed.weight, 2)
+        init_uniform_(self.tsp_node_bias, d_h)
 
-        if problem.has_depot:
-            self.W_x0 = nn.Linear(2, d_h)
-            self.b_x0 = nn.Parameter(torch.zeros(d_h))
-            init_uniform_(self.W_x0.weight, 2)
-            init_uniform_(self.b_x0, d_h)
-            node_in = (
-                4 if problem.name in (ProblemName.PCTSP, ProblemName.SPCTSP) else 3
-            )
-            if self.allow_split:
-                self.W_K_d = nn.Linear(1, d_h, bias=False)
-                self.W_V_d = nn.Linear(1, d_h, bias=False)
-        else:
-            node_in = 2
-            self.v_l = nn.Parameter(torch.empty(d_h))
-            self.v_f = nn.Parameter(torch.empty(d_h))
-            init_uniform_(self.v_l, d_h)
-            init_uniform_(self.v_f, d_h)
+        self.tsp_prev_placeholder = nn.Parameter(torch.empty(d_h))
+        self.tsp_first_placeholder = nn.Parameter(torch.empty(d_h))
+        init_uniform_(self.tsp_prev_placeholder, d_h)
+        init_uniform_(self.tsp_first_placeholder, d_h)
 
-        self.W_x = nn.Linear(node_in, d_h)
-        self.b_x = nn.Parameter(torch.zeros(d_h))
-        init_uniform_(self.W_x.weight, node_in)
-        init_uniform_(self.b_x, d_h)
+        self.mis_node_embed = nn.Linear(in_features=1, out_features=d_h)
+        self.mis_node_bias = nn.Parameter(torch.zeros(d_h))
+        init_uniform_(self.mis_node_embed.weight, 1)
+        init_uniform_(self.mis_node_bias, d_h)
+
+        self.mis_prev_placeholder = nn.Parameter(torch.empty(d_h))
+        self.mis_stop_embedding = nn.Parameter(torch.empty(d_h))
+        self.mis_stop_logit_key = nn.Parameter(torch.empty(d_h))
+        init_uniform_(self.mis_prev_placeholder, d_h)
+        init_uniform_(self.mis_stop_embedding, d_h)
+        init_uniform_(self.mis_stop_logit_key, d_h)
 
         self.encoder = GraphAttentionEncoder(
             n_layers=self.config.n_layers,
@@ -97,12 +59,13 @@ class AttentionModel(nn.Module):
             normalization=self.config.normalization,
         )
 
-        self.W_node_proj = nn.Linear(d_h, 3 * d_h, bias=False)
+        self.W_node_proj = nn.Linear(in_features=d_h, out_features=3 * d_h, bias=False)
         init_uniform_(self.W_node_proj.weight, d_h)
 
-        step_context_dim = (2 * d_h + 1) if problem.has_depot else (3 * d_h)
-        self.W_step = nn.Linear(step_context_dim, d_h, bias=False)
-        init_uniform_(self.W_step.weight, step_context_dim)
+        self.tsp_step = nn.Linear(in_features=3 * d_h, out_features=d_h, bias=False)
+        self.mis_step = nn.Linear(in_features=2 * d_h + 1, out_features=d_h, bias=False)
+        init_uniform_(self.tsp_step.weight, 3 * d_h)
+        init_uniform_(self.mis_step.weight, 2 * d_h + 1)
 
         self.glimpse_mha = MultiHeadAttention(
             n_heads=self.config.n_heads,
@@ -115,136 +78,23 @@ class AttentionModel(nn.Module):
     def set_decode_type(self, decode_type: DecodeType) -> None:
         self.decode_type = decode_type
 
-    def _init_embed(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
-        loc = batch["loc"]
-        batch_size, n, _ = loc.shape
-
-        if not self.problem.has_depot:
-            return self.W_x(loc) + self.b_x
-
-        h0 = torch.zeros(batch_size, n, self.config.d_h, device=loc.device)
-        h0[:, 0] = self.W_x0(loc[:, 0]) + self.b_x0
-
-        if self.problem.name in (ProblemName.PCTSP, ProblemName.SPCTSP):
-            node_feat = torch.cat(
-                [
-                    loc[:, 1:],
-                    batch["prize"][:, 1:, None],
-                    batch["penalty"][:, 1:, None],
-                ],
-                dim=-1,
-            )
-        elif self.problem.name == ProblemName.OP:
-            node_feat = torch.cat([loc[:, 1:], batch["prize"][:, 1:, None]], dim=-1)
-        else:
-            node_feat = torch.cat([loc[:, 1:], batch["demand"][:, 1:, None]], dim=-1)
-
-        h0[:, 1:] = self.W_x(node_feat) + self.b_x
-        return h0
-
-    def _context_embedding(self, h: torch.Tensor, state) -> torch.Tensor:
-        batch_size = h.size(0)
-        h_bar = h.mean(dim=1)
-        batch_idx = torch.arange(batch_size, device=h.device)
-
-        if self.problem.has_depot:
-            prev_a, scalar_ctx, is_first = state.get_context_features()
-            if is_first:
-                prev_emb = h[:, 0]
-            else:
-                prev_emb = h[batch_idx, prev_a]
-            ctx = torch.cat([h_bar, prev_emb, scalar_ctx.unsqueeze(-1)], dim=-1)
-            return self.W_step(ctx)
-
-        first_a, prev_a, is_first = state.get_context_features()
-        if is_first:
-            ctx = torch.cat(
-                [
-                    h_bar,
-                    self.v_l.expand(batch_size, -1),
-                    self.v_f.expand(batch_size, -1),
-                ],
-                dim=-1,
-            )
-        else:
-            ctx = torch.cat(
-                [h_bar, h[batch_idx, prev_a], h[batch_idx, first_a]], dim=-1
-            )
-        return self.W_step(ctx)
-
-    def _attention_logits(
-        self,
-        query: torch.Tensor,
-        keys: torch.Tensor,
-        mask: torch.Tensor,
-        clip: bool,
-    ) -> torch.Tensor:
-        d_h = self.config.d_h
-        q = query.unsqueeze(1)
-        scale = 1.0 / math.sqrt(d_h)
-        compat = scale * torch.matmul(q, keys.transpose(1, 2)).squeeze(1)
-        if clip and self.config.tanh_clip > 0:
-            compat = self.config.tanh_clip * torch.tanh(compat)
-        node_mask = mask.squeeze(1) if mask.dim() == 3 else mask
-        return compat.masked_fill(node_mask, float("-inf"))
-
-    def _glimpse(
-        self,
-        query: torch.Tensor,
-        node_emb: torch.Tensor,
-        mask: torch.Tensor,
-        remaining_demand: torch.Tensor | None,
-    ) -> torch.Tensor:
-        if self.allow_split and remaining_demand is not None:
-            rd = remaining_demand.unsqueeze(-1)
-            keys = node_emb + self.W_K_d(rd)
-            values = node_emb + self.W_V_d(rd)
-            q = query.unsqueeze(1)
-            scale = 1.0 / math.sqrt(self.config.d_h)
-            compat = scale * torch.matmul(q, keys.transpose(1, 2))
-            compat = compat.masked_fill(mask, float("-inf"))
-            attn = torch.softmax(compat, dim=-1)
-            attn = attn.masked_fill(mask, 0.0)
-            return torch.matmul(attn, values).squeeze(1)
-
-        return self.glimpse_mha(query.unsqueeze(1), node_emb, mask=mask).squeeze(1)
-
-    def _decode_step(
-        self,
-        h: torch.Tensor,
-        logit_key: torch.Tensor,
-        state,
-        mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        remaining = getattr(state, "remaining_demand", None)
-        query = self._context_embedding(h, state)
-        glimpse = self._glimpse(query, h, mask, remaining)
-
-        if self.allow_split and remaining is not None:
-            rd = remaining.unsqueeze(-1)
-            keys = logit_key + self.W_K_d(rd)
-            logits = self._attention_logits(glimpse, keys, mask, clip=True)
-        else:
-            logits = self._attention_logits(glimpse, logit_key, mask, clip=True)
-
-        if self.decode_type == "greedy":
-            selected = logits.argmax(dim=-1)
-            all_masked = ~torch.isfinite(logits).any(dim=-1)
-            selected = torch.where(all_masked, torch.zeros_like(selected), selected)
-        else:
-            probs = F.softmax(logits, dim=-1)
-            probs = torch.nan_to_num(probs, nan=0.0)
-            # If every action is masked, return to depot
-            all_masked = ~torch.isfinite(logits).any(dim=-1)
-            probs[all_masked, 0] = 1.0
-            selected = torch.multinomial(probs, 1).squeeze(-1)
-
-        log_p = F.log_softmax(logits, dim=-1)
-        log_p = torch.nan_to_num(log_p, nan=0.0)
-        log_p = log_p.gather(1, selected.unsqueeze(-1)).squeeze(-1)
-        return selected, log_p
-
     def forward(
+        self,
+        batch: dict[str, torch.Tensor],
+        problem: ProblemType | None = None,
+        return_pi: bool = False,
+    ) -> (
+        tuple[torch.Tensor, torch.Tensor]
+        | tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ):
+        problem = self._resolve_problem(batch, problem)
+        if problem == "tsp":
+            return self.solve_tsp(batch, return_pi=return_pi)
+        if problem == "mis":
+            return self.solve_mis(batch, return_pi=return_pi)
+        raise ValueError(f"Unsupported problem: {problem}")
+
+    def solve_tsp(
         self,
         batch: dict[str, torch.Tensor],
         return_pi: bool = False,
@@ -252,59 +102,250 @@ class AttentionModel(nn.Module):
         tuple[torch.Tensor, torch.Tensor]
         | tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ):
-        h, _ = self.encoder(self._init_embed(batch))
-        _, _, logit_key = self.W_node_proj(h).chunk(3, dim=-1)
-        state = make_state(self.problem, batch)
-        batch_size = h.size(0)
-        device = h.device
-        n_customers = h.size(1) - (1 if self.problem.has_depot else 0)
+        loc = self._require_tensor(batch, "loc")
+        if loc.ndim != 3 or loc.size(-1) != 2:
+            raise ValueError("TSP batch['loc'] must have shape [batch, nodes, 2]")
 
-        batch_size = h.size(0)
-        device = h.device
-        n_customers = h.size(1) - (1 if self.problem.has_depot else 0)
-        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        batch_size, num_nodes, _ = loc.shape
+        device = loc.device
+        h, h_bar = self.encoder(self.tsp_node_embed(loc) + self.tsp_node_bias)
+        _, _, logit_key = self.W_node_proj(h).chunk(3, dim=-1)
+
+        selected_mask = torch.zeros(
+            batch_size,
+            num_nodes,
+            dtype=torch.bool,
+            device=device,
+        )
+        batch_idx = torch.arange(batch_size, device=device)
+        first_a = torch.zeros(batch_size, dtype=torch.long, device=device)
+        prev_a = torch.zeros(batch_size, dtype=torch.long, device=device)
 
         log_p_steps: list[torch.Tensor] = []
         actions: list[torch.Tensor] = []
 
-        for _ in range(max_decode_steps(self.problem, n_customers)):
-            mask = state.get_mask()
-            selected, log_p = self._decode_step(h, logit_key, state, mask)
-            selected = torch.where(finished, torch.zeros_like(selected), selected)
-            log_p = torch.where(finished, torch.zeros_like(log_p), log_p)
+        for step in range(num_nodes):
+            if step == 0:
+                context = torch.cat(
+                    [
+                        h_bar,
+                        self.tsp_prev_placeholder.expand(batch_size, -1),
+                        self.tsp_first_placeholder.expand(batch_size, -1),
+                    ],
+                    dim=-1,
+                )
+            else:
+                context = torch.cat(
+                    [h_bar, h[batch_idx, prev_a], h[batch_idx, first_a]],
+                    dim=-1,
+                )
+
+            query = self.tsp_step(context)
+            mask = selected_mask.unsqueeze(1)
+            glimpse = self.glimpse_mha(query.unsqueeze(1), h, mask=mask).squeeze(1)
+            logits = self._attention_logits(glimpse, logit_key, selected_mask)
+            selected, log_p = self._select(logits)
+
+            if step == 0:
+                first_a = selected
+            prev_a = selected
+            selected_mask = selected_mask.scatter(1, selected.unsqueeze(1), True)
 
             log_p_steps.append(log_p)
             actions.append(selected)
 
-            if "real_prize" in batch and self.problem.stochastic:
-                batch_idx = torch.arange(batch_size, device=device)
-                state.update(
-                    selected, real_prize=batch["real_prize"][batch_idx, selected]
-                )
-            else:
-                state.update(selected)
-
-            finished = finished | self._instance_done(state, selected)
-            if finished.all():
-                break
-
         pi = torch.stack(actions, dim=1)
         log_likelihood = torch.stack(log_p_steps, dim=1).sum(dim=1)
-        cost = compute_cost(self.problem, batch, pi)
+        cost = self.tsp_cost(loc, pi)
 
         if return_pi:
             return cost, log_likelihood, pi
         return cost, log_likelihood
 
-    def _instance_done(self, state, selected: torch.Tensor) -> torch.Tensor:
-        if self.problem.name == ProblemName.TSP:
-            return torch.full(
-                (selected.size(0),),
-                state.i >= state.loc.size(1),
-                device=selected.device,
+    def solve_mis(
+        self,
+        batch: dict[str, torch.Tensor],
+        return_pi: bool = False,
+    ) -> (
+        tuple[torch.Tensor, torch.Tensor]
+        | tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ):
+        adjacency = self._require_tensor(batch, "adjacency").bool()
+        if adjacency.ndim != 3 or adjacency.size(1) != adjacency.size(2):
+            raise ValueError(
+                "MIS batch['adjacency'] must have shape [batch, nodes, nodes]"
             )
-        if self.problem.name in (ProblemName.CVRP, ProblemName.SDVRP):
-            return (state.remaining_demand[:, 1:].sum(-1) == 0) & (state.i > 1)
-        if self.problem.name in (ProblemName.OP, ProblemName.PCTSP, ProblemName.SPCTSP):
-            return (selected == 0) & (state.i > 1)
-        return torch.zeros(selected.size(0), dtype=torch.bool, device=selected.device)
+
+        batch_size, num_nodes, _ = adjacency.shape
+        device = adjacency.device
+        degree = adjacency.float().sum(dim=-1, keepdim=True)
+        degree = degree / max(num_nodes - 1, 1)
+
+        eye = torch.eye(num_nodes, dtype=torch.bool, device=device).unsqueeze(0)
+        graph_mask = ~(adjacency | eye)
+        h, h_bar = self.encoder(
+            self.mis_node_embed(degree) + self.mis_node_bias,
+            mask=graph_mask,
+        )
+        _, _, node_logit_key = self.W_node_proj(h).chunk(3, dim=-1)
+
+        stop_index = num_nodes
+        stop_embedding = self.mis_stop_embedding.view(1, 1, -1).expand(
+            batch_size,
+            1,
+            -1,
+        )
+        stop_logit_key = self.mis_stop_logit_key.view(1, 1, -1).expand(
+            batch_size,
+            1,
+            -1,
+        )
+        decode_nodes = torch.cat([h, stop_embedding], dim=1)
+        decode_keys = torch.cat([node_logit_key, stop_logit_key], dim=1)
+
+        unavailable = torch.zeros(
+            batch_size,
+            num_nodes,
+            dtype=torch.bool,
+            device=device,
+        )
+        selected_mask = torch.zeros_like(unavailable)
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        prev_emb = self.mis_prev_placeholder.expand(batch_size, -1)
+        batch_idx = torch.arange(batch_size, device=device)
+
+        log_p_steps: list[torch.Tensor] = []
+        actions: list[torch.Tensor] = []
+
+        for _ in range(num_nodes + 1):
+            available_ratio = (~unavailable).float().sum(dim=-1) / num_nodes
+            context = torch.cat(
+                [h_bar, prev_emb, available_ratio.unsqueeze(-1)], dim=-1
+            )
+            query = self.mis_step(context)
+
+            action_mask = torch.cat(
+                [
+                    unavailable,
+                    torch.zeros(batch_size, 1, dtype=torch.bool, device=device),
+                ],
+                dim=1,
+            )
+            action_mask = torch.where(
+                finished.unsqueeze(1),
+                self._stop_only_mask(batch_size, num_nodes, device),
+                action_mask,
+            )
+
+            glimpse = self.glimpse_mha(
+                query.unsqueeze(1),
+                decode_nodes,
+                mask=action_mask.unsqueeze(1),
+            ).squeeze(1)
+            logits = self._attention_logits(glimpse, decode_keys, action_mask)
+            selected, log_p = self._select(logits)
+
+            selected = torch.where(
+                finished,
+                torch.full_like(selected, stop_index),
+                selected,
+            )
+            log_p = torch.where(finished, torch.zeros_like(log_p), log_p)
+
+            is_stop = selected == stop_index
+            active = (~finished) & (~is_stop)
+            node_selected = selected.clamp(max=num_nodes - 1)
+
+            if active.any():
+                active_idx = batch_idx[active]
+                active_nodes = node_selected[active]
+                selected_mask[active_idx, active_nodes] = True
+                unavailable[active_idx] |= adjacency[active_idx, active_nodes]
+                unavailable[active_idx, active_nodes] = True
+                prev_emb = torch.where(
+                    active.unsqueeze(1),
+                    h[batch_idx, node_selected],
+                    prev_emb,
+                )
+
+            finished = finished | is_stop | unavailable.all(dim=-1)
+            log_p_steps.append(log_p)
+            actions.append(selected)
+
+            if finished.all():
+                break
+
+        log_likelihood = torch.stack(log_p_steps, dim=1).sum(dim=1)
+        cost = -selected_mask.float().sum(dim=1)
+
+        if return_pi:
+            return cost, log_likelihood, selected_mask
+        return cost, log_likelihood
+
+    @staticmethod
+    def tsp_cost(loc: torch.Tensor, pi: torch.Tensor) -> torch.Tensor:
+        ordered = loc.gather(1, pi.unsqueeze(-1).expand(-1, -1, loc.size(-1)))
+        return (ordered[:, 1:] - ordered[:, :-1]).norm(p=2, dim=-1).sum(dim=1) + (
+            ordered[:, 0] - ordered[:, -1]
+        ).norm(p=2, dim=-1)
+
+    def _resolve_problem(
+        self,
+        batch: dict[str, torch.Tensor],
+        problem: ProblemType | None,
+    ) -> ProblemType:
+        if problem is not None:
+            return problem
+        if self.default_problem is not None:
+            return self.default_problem
+        if "loc" in batch:
+            return "tsp"
+        if "adjacency" in batch:
+            return "mis"
+        raise ValueError("Pass problem='tsp' or problem='mis' to forward")
+
+    @staticmethod
+    def _require_tensor(batch: dict[str, torch.Tensor], key: str) -> torch.Tensor:
+        value = batch.get(key)
+        if value is None:
+            raise ValueError(f"Missing batch['{key}']")
+        if not isinstance(value, torch.Tensor):
+            raise TypeError(f"batch['{key}'] must be a torch.Tensor")
+        return value
+
+    def _attention_logits(
+        self,
+        query: torch.Tensor,
+        keys: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        scale = 1.0 / math.sqrt(self.config.d_h)
+        logits = scale * torch.matmul(query.unsqueeze(1), keys.transpose(1, 2)).squeeze(
+            1
+        )
+        if self.config.tanh_clip > 0:
+            logits = self.config.tanh_clip * torch.tanh(logits)
+        return logits.masked_fill(mask, float("-inf"))
+
+    def _select(self, logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.decode_type == "greedy":
+            selected = logits.argmax(dim=-1)
+        else:
+            probs = F.softmax(logits, dim=-1)
+            probs = torch.nan_to_num(probs, nan=0.0)
+            selected = torch.multinomial(probs, 1).squeeze(-1)
+
+        log_p = F.log_softmax(logits, dim=-1)
+        log_p = torch.nan_to_num(log_p, nan=0.0, neginf=0.0)
+        log_p = log_p.gather(1, selected.unsqueeze(-1)).squeeze(-1)
+        return selected, log_p
+
+    @staticmethod
+    def _stop_only_mask(
+        batch_size: int,
+        num_nodes: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        mask = torch.ones(batch_size, num_nodes + 1, dtype=torch.bool, device=device)
+        mask[:, -1] = False
+        return mask
