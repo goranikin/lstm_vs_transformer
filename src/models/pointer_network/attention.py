@@ -8,8 +8,10 @@ class AdditiveAttention(nn.Module):
     def __init__(
         self,
         hidden_size: int,
+        tanh_clip: float | None = None,
     ):
         super().__init__()
+        self.tanh_clip = tanh_clip
         self.W_encoder = nn.Parameter(torch.empty(hidden_size, hidden_size))
         self.W_decoder = nn.Parameter(torch.empty(hidden_size, hidden_size))
         self.W_score = nn.Parameter(torch.empty(1, hidden_size))
@@ -35,6 +37,8 @@ class AdditiveAttention(nn.Module):
             torch.tanh(e_proj + d_proj),
             self.W_score,
         ).squeeze(-1)
+        if self.tanh_clip is not None and self.tanh_clip > 0:
+            u = self.tanh_clip * torch.tanh(u)
         if mask is not None:
-            u = u.masked_fill(mask, torch.finfo(u.dtype).min)
+            u = u.masked_fill(mask, float("-inf"))
         return u

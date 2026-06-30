@@ -40,15 +40,18 @@ class MultiHeadAttention(nn.Module):
         self,
         q: torch.Tensor,
         h: torch.Tensor | None = None,
+        value: torch.Tensor | None = None,
         mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if h is None:
             h = q
+        if value is None:
+            value = h
 
         # Projections (eq. 10): b=batch, h=head, i=input_dim, k/d_k, v/d_v, n/key len, q/query len
         Q = torch.einsum("bqi,hik->hbqk", q, self.W_query)
         K = torch.einsum("bni,hik->hbnk", h, self.W_key)
-        V = torch.einsum("bni,hiv->hbnv", h, self.W_val)
+        V = torch.einsum("bni,hiv->hbnv", value, self.W_val)
 
         # u_ij = q_i^T k_j / sqrt(d_k)  (eq. 11)
         compatibility = self.scale * torch.einsum("hbqk,hbnk->hbqn", Q, K)

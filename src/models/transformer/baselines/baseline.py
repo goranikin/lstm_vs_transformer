@@ -1,11 +1,9 @@
 import copy
+from collections.abc import Iterable
 
 import torch
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from scipy.stats import ttest_rel
-
-from src.data.registry import ProblemSpec, sample_batch
-from src.models.transformer.model import AttentionModel
 
 
 class ExponentialBaseline:
@@ -14,76 +12,88 @@ class ExponentialBaseline:
         self.v: torch.Tensor | None = None
 
     def eval(self, cost: torch.Tensor) -> torch.Tensor:
-        mean_cost = cost.mean()
+        mean_cost = cost.detach().mean()
         if self.v is None:
-            self.v = mean_cost.detach()
+            self.v = mean_cost
         else:
-            self.v = self.beta * self.v + (1.0 - self.beta) * mean_cost.detach()
-        return self.v.expand_as(cost)
+            self.v = self.beta * self.v + (1.0 - self.beta) * mean_cost
+        return self.v.to(cost.device).expand_as(cost)
 
 
 class RolloutBaseline(BaseModel):
+    """Greedy rollout baseline for AM/PN policy-gradient training."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    problem: ProblemSpec
-    graph_size: int
+    problem: str
     device: torch.device
-    alpha: float = 0.05
-    val_size: int = 10_000
-    baseline_model: AttentionModel | None = None
-    val_batch: dict[str, torch.Tensor] | None = None
+    alpha: float = Field(default=0.05, ge=0, le=1)
+    baseline_model: torch.nn.Module | None = None
 
-    def _ensure_val_batch(self) -> dict[str, torch.Tensor]:
-        if self.val_batch is None:
-            self.val_batch = sample_batch(
-                self.problem, self.val_size, self.graph_size, self.device
-            )
-        return self.val_batch
-
-    def init_from(self, model: AttentionModel) -> None:
+    def init_from(self, model: torch.nn.Module) -> None:
         self.baseline_model = copy.deepcopy(model).to(self.device)
         self.baseline_model.eval()
-        self.baseline_model.set_decode_type("greedy")
+        if hasattr(self.baseline_model, "set_decode_type"):
+            self.baseline_model.set_decode_type("greedy")
 
     @torch.no_grad()
     def greedy_costs(
-        self, model: AttentionModel, batch: dict[str, torch.Tensor]
+        self,
+        model: torch.nn.Module,
+        batch: dict[str, torch.Tensor],
     ) -> torch.Tensor:
+        was_training = model.training
+        previous_decode_type = getattr(model, "decode_type", None)
         model.eval()
-        model.set_decode_type("greedy")
-        cost, _ = model(batch)
+        if hasattr(model, "set_decode_type"):
+            model.set_decode_type("greedy")
+        cost, _ = model(batch, problem=self.problem)
+        if hasattr(model, "set_decode_type"):
+            model.set_decode_type(previous_decode_type or "sampling")
+        if was_training:
+            model.train()
         return cost.detach()
 
     def eval_batch(
         self,
-        model: AttentionModel,
+        model: torch.nn.Module,
         batch: dict[str, torch.Tensor],
         warmup: ExponentialBaseline | None = None,
     ) -> torch.Tensor:
         if self.baseline_model is None:
             if warmup is None:
-                return torch.zeros(batch["loc"].size(0), device=self.device)
-            return warmup.eval(torch.zeros(batch["loc"].size(0), device=self.device))
+                cost, _ = model(batch, problem=self.problem)
+                return cost.detach().mean().expand_as(cost)
+            cost, _ = model(batch, problem=self.problem)
+            return warmup.eval(cost)
 
         return self.greedy_costs(self.baseline_model, batch)
 
     @torch.no_grad()
     def maybe_update(
-        self, model: AttentionModel, epoch: int, warmup_epochs: int
-    ) -> None:
+        self,
+        model: torch.nn.Module,
+        val_batches: Iterable[dict[str, torch.Tensor]],
+        epoch: int,
+        warmup_epochs: int,
+    ) -> bool:
         if epoch < warmup_epochs:
-            return
+            return False
 
         if self.baseline_model is None:
             self.init_from(model)
-            self.val_batch = None
-            return
+            return True
 
-        val = self._ensure_val_batch()
-        candidate = self.greedy_costs(model, val)
-        baseline = self.greedy_costs(self.baseline_model, val)
+        candidate_costs = []
+        baseline_costs = []
+        for batch in val_batches:
+            candidate_costs.append(self.greedy_costs(model, batch))
+            baseline_costs.append(self.greedy_costs(self.baseline_model, batch))
 
-        _, p_value = ttest_rel(candidate.cpu().numpy(), baseline.cpu().numpy())
+        candidate = torch.cat(candidate_costs).cpu()
+        baseline = torch.cat(baseline_costs).cpu()
+        _, p_value = ttest_rel(candidate.numpy(), baseline.numpy())
         if p_value < self.alpha and candidate.mean() < baseline.mean():
             self.init_from(model)
-            self.val_batch = None
+            return True
+        return False

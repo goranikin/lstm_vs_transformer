@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AMModelConfig(BaseModel):
@@ -14,6 +14,12 @@ class AMModelConfig(BaseModel):
     d_ff: int = Field(default=512, gt=0)
     tanh_clip: float = Field(default=10.0, ge=0)
     normalization: Literal["batch", "instance"] = "batch"
+
+    @model_validator(mode="after")
+    def validate_attention_dimensions(self) -> Self:
+        if self.d_h % self.n_heads != 0:
+            raise ValueError("d_h must be divisible by n_heads")
+        return self
 
 
 class AMTrainingConfig(BaseModel):
@@ -31,6 +37,9 @@ class AMTrainingConfig(BaseModel):
     baseline_warmup_epochs: int = Field(default=1, ge=0)
     exp_baseline_beta: float = Field(default=0.8, ge=0, le=1)
     val_size: int = Field(default=10_000, gt=0)
+    eval_batch_size: int = Field(default=1024, gt=0)
+    n_sample_eval: int = Field(default=1280, gt=0)
+    baseline: Literal["rollout", "exponential"] = "rollout"
     log_every: int = Field(default=50, gt=0)
     checkpoint_every: int = Field(default=1, gt=0)
     output_dir: str = "outputs"

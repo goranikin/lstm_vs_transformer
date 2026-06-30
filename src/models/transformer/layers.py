@@ -79,8 +79,6 @@ class Normalization(nn.Module):
 
         self.w_bn = nn.Parameter(torch.ones(hidden_dim))
         self.b_bn = nn.Parameter(torch.zeros(hidden_dim))
-        init_uniform_(param=self.w_bn, d=hidden_dim)
-        init_uniform_(param=self.b_bn, d=hidden_dim)
 
     def forward(
         self,
