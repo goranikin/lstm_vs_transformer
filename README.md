@@ -104,9 +104,28 @@ uv run python -m src.data_generating.MIS.generate \
 Generation is deterministic per instance: the seed for item `index` is
 `base_seed + index`.
 
-## Training Entry Points
+## Hydra Training Configuration
 
-There is one script per model/problem/training-mode combination:
+Training uses Hydra. The base config is:
+
+```text
+configs/hydra/base.yaml
+```
+
+Each model/problem/training-mode combination has its own config:
+
+```text
+configs/hydra/train_am_tsp_supervised.yaml
+configs/hydra/train_am_tsp_rl.yaml
+configs/hydra/train_am_mis_supervised.yaml
+configs/hydra/train_am_mis_rl.yaml
+configs/hydra/train_pn_tsp_supervised.yaml
+configs/hydra/train_pn_tsp_rl.yaml
+configs/hydra/train_pn_mis_supervised.yaml
+configs/hydra/train_pn_mis_rl.yaml
+```
+
+The matching Python entry points are:
 
 ```text
 src.main.train_am_tsp_supervised
@@ -119,70 +138,81 @@ src.main.train_pn_mis_supervised
 src.main.train_pn_mis_rl
 ```
 
-Shared CLI options include:
+Use Hydra overrides instead of argparse flags. Common override keys:
 
 ```text
---train-path
---val-path
---target-algorithm
---output-dir
---device
---seed
---epochs
---steps-per-epoch
---batch-size
---eval-batch-size
---learning-rate
---learning-rate-decay
---max-grad-norm
---optimizer
---baseline
---log-every
---checkpoint-every
+paths.train
+paths.val
+paths.output_dir
+data.target_algorithm
+data.batch_size
+data.eval_batch_size
+data.num_workers
+data.shuffle
+trainer.epochs
+trainer.steps_per_epoch
+trainer.learning_rate
+trainer.learning_rate_decay
+trainer.max_grad_norm
+trainer.optimizer
+trainer.baseline
+trainer.log_every
+trainer.checkpoint_every
+model.am.d_h
+model.am.n_layers
+model.am.n_heads
+model.pn.hidden_size
+model.pn.n_glimpses
 ```
 
 Supervised TSP with AM:
 
 ```bash
 uv run python -m src.main.train_am_tsp_supervised \
-  --train-path data/tsp/tsp50_seed1234.jsonl \
-  --val-path data/tsp/tsp50_val_seed1234.jsonl \
-  --target-algorithm concorde \
-  --epochs 100 \
-  --batch-size 512
+  paths.train=data/tsp/tsp50_seed1234.jsonl \
+  paths.val=data/tsp/tsp50_val_seed1234.jsonl \
+  data.target_algorithm=concorde \
+  trainer.epochs=100 \
+  data.batch_size=512
 ```
 
 RL TSP with AM:
 
 ```bash
 uv run python -m src.main.train_am_tsp_rl \
-  --train-path data/tsp/tsp50_seed1234.jsonl \
-  --val-path data/tsp/tsp50_val_seed1234.jsonl \
-  --epochs 100 \
-  --steps-per-epoch 2500 \
-  --batch-size 512 \
-  --baseline rollout
+  paths.train=data/tsp/tsp50_seed1234.jsonl \
+  paths.val=data/tsp/tsp50_val_seed1234.jsonl \
+  trainer.epochs=100 \
+  trainer.steps_per_epoch=2500 \
+  data.batch_size=512 \
+  trainer.baseline=rollout
 ```
 
 Supervised MIS with PN:
 
 ```bash
 uv run python -m src.main.train_pn_mis_supervised \
-  --train-path data/mis/mis100_p015_seed1234.jsonl \
-  --val-path data/mis/mis100_p015_val_seed1234.jsonl \
-  --target-algorithm gurobi \
-  --epochs 100
+  paths.train=data/mis/mis100_p015_seed1234.jsonl \
+  paths.val=data/mis/mis100_p015_val_seed1234.jsonl \
+  data.target_algorithm=gurobi \
+  trainer.epochs=100
 ```
 
 RL MIS with PN:
 
 ```bash
 uv run python -m src.main.train_pn_mis_rl \
-  --train-path data/mis/mis100_p015_seed1234.jsonl \
-  --val-path data/mis/mis100_p015_val_seed1234.jsonl \
-  --epochs 100 \
-  --steps-per-epoch 2500 \
-  --baseline rollout
+  paths.train=data/mis/mis100_p015_seed1234.jsonl \
+  paths.val=data/mis/mis100_p015_val_seed1234.jsonl \
+  trainer.epochs=100 \
+  trainer.steps_per_epoch=2500 \
+  trainer.baseline=rollout
+```
+
+Print a resolved job config without training:
+
+```bash
+uv run python -m src.main.train_am_tsp_rl --cfg job
 ```
 
 ## Model Interface
@@ -244,9 +274,9 @@ Small one-step smoke run:
 
 ```bash
 uv run python -m src.main.train_am_tsp_rl \
-  --train-path data/tsp/tsp50_seed1234.jsonl \
-  --epochs 1 \
-  --steps-per-epoch 1 \
-  --batch-size 2 \
-  --checkpoint-every 99
+  paths.train=data/tsp/tsp50_seed1234.jsonl \
+  trainer.epochs=1 \
+  trainer.steps_per_epoch=1 \
+  data.batch_size=2 \
+  trainer.checkpoint_every=99
 ```

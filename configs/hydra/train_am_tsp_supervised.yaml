@@ -1,0 +1,20 @@
+defaults:
+  - base
+  - _self_
+
+problem: tsp
+mode: supervised
+
+model:
+  name: am
+
+data:
+  batch_size: 512
+  target_algorithm: concorde
+
+trainer:
+  learning_rate: 1.0e-4
+  learning_rate_decay: 1.0
+  max_grad_norm: 1.0
+  optimizer: adam
+  steps_per_epoch: null

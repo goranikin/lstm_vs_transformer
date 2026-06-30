@@ -1,5 +1,5 @@
 import random
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
 import numpy as np
@@ -81,11 +81,32 @@ def build_loader(
 def build_model(
     model_name: ModelName,
     problem: ProblemName,
+    model_options: Mapping[str, Any] | None = None,
 ) -> torch.nn.Module:
+    options = dict(model_options or {})
+    interface = dict(options.get("interface") or {})
     if model_name == "am":
-        return AttentionModel(config=AMModelConfig(), default_problem=problem)
+        return AttentionModel(
+            config=AMModelConfig(**dict(options.get("am") or {})),
+            default_problem=problem,
+            tsp_input_size=int(options.get("tsp_input_size", 2)),
+            mis_input_size=int(options.get("mis_input_size", 1)),
+            mis_context_size=int(options.get("mis_context_size", 1)),
+            loc_key=str(interface.get("loc_key", "loc")),
+            adjacency_key=str(interface.get("adjacency_key", "adjacency")),
+            target_tour_key=str(interface.get("target_tour_key", "target_tour")),
+            target_set_key=str(interface.get("target_set_key", "target_set")),
+        )
     if model_name == "pn":
-        return PointerNetwork(config=PNModelConfig(), default_problem=problem)
+        return PointerNetwork(
+            input_size=int(options.get("input_size", 2)),
+            config=PNModelConfig(**dict(options.get("pn") or {})),
+            default_problem=problem,
+            loc_key=str(interface.get("loc_key", "loc")),
+            adjacency_key=str(interface.get("adjacency_key", "adjacency")),
+            target_tour_key=str(interface.get("target_tour_key", "target_tour")),
+            target_set_key=str(interface.get("target_set_key", "target_set")),
+        )
     raise ValueError(f"Unsupported model: {model_name}")
 
 

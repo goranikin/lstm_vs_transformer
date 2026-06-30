@@ -1,0 +1,21 @@
+defaults:
+  - base
+  - _self_
+
+problem: tsp
+mode: rl
+
+model:
+  name: am
+
+data:
+  batch_size: 512
+  target_algorithm: null
+
+trainer:
+  learning_rate: 1.0e-4
+  learning_rate_decay: 1.0
+  max_grad_norm: 1.0
+  optimizer: adam
+  steps_per_epoch: 2500
+  baseline: rollout

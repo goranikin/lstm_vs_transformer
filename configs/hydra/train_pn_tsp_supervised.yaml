@@ -1,0 +1,20 @@
+defaults:
+  - base
+  - _self_
+
+problem: tsp
+mode: supervised
+
+model:
+  name: pn
+
+data:
+  batch_size: 128
+  target_algorithm: concorde
+
+trainer:
+  learning_rate: 1.0
+  learning_rate_decay: 1.0
+  max_grad_norm: 2.0
+  optimizer: sgd
+  steps_per_epoch: null

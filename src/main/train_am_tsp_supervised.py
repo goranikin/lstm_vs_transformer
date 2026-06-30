@@ -1,5 +1,17 @@
+import hydra
+from omegaconf import DictConfig
+
 from src.main.train_common import run_pipeline
 
 
+@hydra.main(
+    version_base=None,
+    config_path="../../configs/hydra",
+    config_name="train_am_tsp_supervised",
+)
+def main(cfg: DictConfig) -> None:
+    run_pipeline(cfg)
+
+
 if __name__ == "__main__":
-    run_pipeline(model_name="am", problem="tsp", mode="supervised")
+    main()

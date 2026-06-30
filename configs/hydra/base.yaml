@@ -1,0 +1,64 @@
+seed: 1234
+device: auto
+problem: tsp
+mode: rl
+
+paths:
+  train: ???
+  val: null
+  output_dir: null
+
+data:
+  target_algorithm: null
+  batch_size: 512
+  eval_batch_size: 1024
+  num_workers: 0
+  shuffle: true
+
+model:
+  name: am
+  input_size: 2
+  tsp_input_size: 2
+  mis_input_size: 1
+  mis_context_size: 1
+  interface:
+    loc_key: loc
+    adjacency_key: adjacency
+    target_tour_key: target_tour
+    target_set_key: target_set
+  am:
+    d_h: 128
+    n_layers: 3
+    n_heads: 8
+    d_ff: 512
+    tanh_clip: 10.0
+    normalization: batch
+  pn:
+    hidden_size: 256
+    num_layers: 1
+    dropout: 0.0
+    tanh_clip: 10.0
+    n_glimpses: 1
+    mask_inner: true
+    mask_logits: true
+
+trainer:
+  epochs: 100
+  steps_per_epoch: null
+  learning_rate: 1.0e-4
+  learning_rate_decay: 1.0
+  max_grad_norm: 1.0
+  optimizer: adam
+  baseline: rollout
+  baseline_alpha: 0.05
+  baseline_warmup_epochs: 1
+  exp_baseline_beta: 0.8
+  log_every: 50
+  checkpoint_every: 1
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null
