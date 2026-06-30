@@ -11,3 +11,10 @@ dependencies = [
     "torch>=2.12.1",
     "tqdm>=4.68.3",
 ]
+
+[project.optional-dependencies]
+tsp-solver = [
+    "pyconcorde @ git+https://github.com/jvkersch/pyconcorde",
+    "lkh",
+    "tsplib95",
+]

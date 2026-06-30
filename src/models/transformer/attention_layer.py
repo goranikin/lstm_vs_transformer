@@ -12,8 +12,6 @@ from src.models.transformer.layers import (
 
 
 class MultiHeadAttention(nn.Module):
-    """Scaled dot-product multi-head attention (eqs. 10–14)."""
-
     def __init__(
         self,
         n_heads: int,
