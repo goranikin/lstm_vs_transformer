@@ -83,8 +83,8 @@ def run_pipeline(cfg: DictConfig) -> None:
         max_grad_norm=float(trainer_cfg["max_grad_norm"]),
         log_every=int(trainer_cfg["log_every"]),
         checkpoint_every=int(trainer_cfg["checkpoint_every"]),
-        optimizer=str(trainer_cfg["optimizer"]),
-        baseline=str(trainer_cfg["baseline"]),
+        optimizer=str(trainer_cfg["optimizer"]),  # type: ignore
+        baseline=str(trainer_cfg["baseline"]),  # type: ignore
         baseline_alpha=float(trainer_cfg["baseline_alpha"]),
         baseline_warmup_epochs=int(trainer_cfg["baseline_warmup_epochs"]),
         exp_baseline_beta=float(trainer_cfg["exp_baseline_beta"]),
@@ -101,25 +101,25 @@ def run_pipeline(cfg: DictConfig) -> None:
     trainer.fit()
 
 
-def _as_dict(value: object) -> dict:
+def _as_dict(value) -> dict:
     if not isinstance(value, dict):
         raise TypeError(f"Expected mapping config section, got {type(value).__name__}")
     return value
 
 
-def _as_model_name(value: object) -> ModelName:
+def _as_model_name(value) -> ModelName:
     if value not in ("am", "pn"):
         raise ValueError("model.name must be 'am' or 'pn'")
     return value
 
 
-def _as_problem_name(value: object) -> ProblemName:
+def _as_problem_name(value) -> ProblemName:
     if value not in ("tsp", "mis"):
         raise ValueError("problem must be 'tsp' or 'mis'")
     return value
 
 
-def _as_mode_name(value: object) -> ModeName:
+def _as_mode_name(value) -> ModeName:
     if value not in ("supervised", "rl"):
         raise ValueError("mode must be 'supervised' or 'rl'")
     return value

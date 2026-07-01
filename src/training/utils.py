@@ -27,7 +27,15 @@ def set_seed(seed: int) -> None:
 
 def resolve_device(device: str) -> torch.device:
     if device == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        elif (
+            getattr(torch.backends, "mps", None) is not None
+            and torch.backends.mps.is_available()
+        ):
+            return torch.device("mps")
+        else:
+            return torch.device("cpu")
     return torch.device(device)
 
 
@@ -53,7 +61,9 @@ def build_dataset(
     raise ValueError(f"Unsupported problem: {problem}")
 
 
-def collate_for(problem: ProblemName) -> Callable[[list[dict[str, Any]]], dict[str, Any]]:
+def collate_for(
+    problem: ProblemName,
+) -> Callable[[list[dict[str, Any]]], dict[str, Any]]:
     if problem == "tsp":
         return collate_tsp
     if problem == "mis":
@@ -111,7 +121,9 @@ def build_model(
 
 
 def count_trainable_parameters(model: torch.nn.Module) -> int:
-    return sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+    return sum(
+        parameter.numel() for parameter in model.parameters() if parameter.requires_grad
+    )
 
 
 def default_target_algorithm(problem: ProblemName) -> str:

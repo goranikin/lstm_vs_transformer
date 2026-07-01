@@ -7,7 +7,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 
-from src.models.transformer.baselines.baseline import ExponentialBaseline, RolloutBaseline
+from src.models.transformer.baselines.baseline import (
+    ExponentialBaseline,
+    RolloutBaseline,
+)
 from src.training.utils import move_batch_to_device
 
 ProblemName = Literal["tsp", "mis"]
@@ -72,8 +75,8 @@ class SupervisedTrainer:
         steps = 0
         for step, batch in enumerate(self._epoch_batches(self.train_loader), start=1):
             batch = move_batch_to_device(batch, self.device)
-            self.optimizer.zero_grad(set_to_none=True)
-            loss = self.model.supervised_loss(batch, problem=self.config.problem)
+            self.optimizer.zero_grad()
+            loss = self.model.supervised_loss(batch=batch, problem=self.config.problem)
             loss.backward()
             clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
             self.optimizer.step()
@@ -81,10 +84,7 @@ class SupervisedTrainer:
             total_loss += float(loss.detach().item())
             steps += 1
             if step % self.config.log_every == 0:
-                print(
-                    f"epoch={epoch + 1} step={step} "
-                    f"loss={total_loss / steps:.6f}"
-                )
+                print(f"epoch={epoch + 1} step={step} loss={total_loss / steps:.6f}")
         return total_loss / max(steps, 1)
 
     @torch.no_grad()
@@ -116,9 +116,13 @@ class SupervisedTrainer:
 
     def _build_optimizer(self) -> torch.optim.Optimizer:
         if self.config.optimizer == "adam":
-            return torch.optim.Adam(self.model.parameters(), lr=self.config.learning_rate)
+            return torch.optim.Adam(
+                self.model.parameters(), lr=self.config.learning_rate
+            )
         if self.config.optimizer == "sgd":
-            return torch.optim.SGD(self.model.parameters(), lr=self.config.learning_rate)
+            return torch.optim.SGD(
+                self.model.parameters(), lr=self.config.learning_rate
+            )
         raise ValueError(f"Unsupported optimizer: {self.config.optimizer}")
 
     def _set_learning_rate(self, learning_rate: float) -> None:
@@ -254,7 +258,4 @@ class RLTrainer(SupervisedTrainer):
     def _validation_batches(self) -> Iterable[dict[str, torch.Tensor]]:
         if self.val_loader is None:
             return []
-        return (
-            move_batch_to_device(batch, self.device)
-            for batch in self.val_loader
-        )
+        return (move_batch_to_device(batch, self.device) for batch in self.val_loader)

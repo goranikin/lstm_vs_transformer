@@ -215,6 +215,38 @@ Print a resolved job config without training:
 uv run python -m src.main.train_am_tsp_rl --cfg job
 ```
 
+## Debugging Training Pipelines
+
+VS Code debugger configs are included in `.vscode/launch.json` for all eight
+training entry points:
+
+```text
+Debug AM TSP Supervised
+Debug AM TSP RL
+Debug AM MIS Supervised
+Debug AM MIS RL
+Debug PN TSP Supervised
+Debug PN TSP RL
+Debug PN MIS Supervised
+Debug PN MIS RL
+```
+
+Open Run and Debug, select one of those configs, and enter the TSP or MIS JSONL
+train path when prompted. The debug profiles run short jobs by default:
+
+```text
+trainer.epochs=1
+trainer.steps_per_epoch=2
+data.batch_size=2
+paths.val=null
+```
+
+The launch configs set `HYDRA_FULL_ERROR=1`, keep `PYTHONPATH` pointed at the
+workspace root, and enable Python subprocess debugging with `subProcess: true`.
+The default `data.num_workers=0` is easiest for stepping through dataset and
+training code; increase it in the prompt if you specifically want to debug
+DataLoader worker processes.
+
 ## Model Interface
 
 Both PN and AM follow the same high-level interface:

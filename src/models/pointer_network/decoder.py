@@ -76,10 +76,11 @@ class PointerDecoder(nn.Module):
                 )
                 glimpse_prob = F.softmax(glimpse_logits, dim=-1)
                 glimpse_prob = torch.nan_to_num(glimpse_prob, nan=0.0)
-                hidden = torch.bmm(
-                    glimpse_prob.unsqueeze(1),
+                hidden = torch.einsum(
+                    "bn,bnd->bd",
+                    glimpse_prob,
                     encoder_output_list,
-                ).squeeze(1)
+                )
 
             step_logits: torch.Tensor = self.attention(
                 encoder_output_list=encoder_output_list,

@@ -20,3 +20,9 @@ tsp-solver = [
     "lkh",
     "tsplib95",
 ]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.20",
+    "ty>=0.0.55",
+]

@@ -88,7 +88,7 @@ class PointerNetwork(nn.Module):
     ):
         if isinstance(batch, torch.Tensor):
             return self.decode_sequence(
-                batch,
+                input_list=batch,
                 target_list=target_list,
                 output_length=output_length,
                 teacher_forcing_ratio=teacher_forcing_ratio,
@@ -168,6 +168,8 @@ class PointerNetwork(nn.Module):
         tuple[torch.Tensor, torch.Tensor]
         | tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ):
+        # (b, i, j)
+        # True if node i and node j share an edge.
         adjacency = self._require_tensor(batch, self.adjacency_key).bool()
         if adjacency.ndim != 3 or adjacency.size(1) != adjacency.size(2):
             raise ValueError(
@@ -182,9 +184,11 @@ class PointerNetwork(nn.Module):
         stop_input = self.mis_stop_input.view(1, 1, -1).expand(batch_size, 1, -1)
         input_list = torch.cat([node_input, stop_input], dim=1)
 
+        # 1. Encode the input list
         encoder_output_list, hidden_states, cell_states = self.encoder(input_list)
         hidden = hidden_states[-1]
         cell = cell_states[-1]
+        # use the initial decoder input
         decoder_input = self.decoder.initial_input.expand(batch_size, -1)
         batch_idx = torch.arange(batch_size, device=device)
 
