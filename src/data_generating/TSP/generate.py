@@ -22,10 +22,11 @@ class TSPGenerationConfig(BaseModel):
     lkh3_trials: int = Field(default=1000, gt=0)
     lkh3_runs: int = Field(default=10, gt=0)
     solver_timeout_sec: float | None = None
+    skip_solvers: bool = False
 
     @model_validator(mode="after")
     def validate_solvers(self) -> Self:
-        if not self.solvers:
+        if not self.skip_solvers and not self.solvers:
             raise ValueError("at least one solver must be requested")
         return self
 
@@ -39,13 +40,15 @@ def iter_tsp_records(config: TSPGenerationConfig) -> Iterator[dict[str, Any]]:
     for index in range(config.num_instances):
         seed = instance_seed(config.seed, index)
         coords = generate_tsp_instance(config.num_nodes, seed)
-        yield {
+        record: dict[str, Any] = {
             "problem": "tsp",
             "index": index,
             "seed": seed,
             "num_nodes": config.num_nodes,
             "coordinates": coords.tolist(),
-            "solutions": solve_with_algorithms(
+        }
+        if not config.skip_solvers:
+            record["solutions"] = solve_with_algorithms(
                 coords,
                 algorithms=config.solvers,
                 concorde_executable=config.concorde_executable,
@@ -54,8 +57,8 @@ def iter_tsp_records(config: TSPGenerationConfig) -> Iterator[dict[str, Any]]:
                 lkh3_runs=config.lkh3_runs,
                 seed=seed,
                 timeout_sec=config.solver_timeout_sec,
-            ),
-        }
+            )
+        yield record
 
 
 def generate_tsp_dataset(config: TSPGenerationConfig) -> int:
@@ -81,6 +84,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lkh3-trials", type=int, default=1000)
     parser.add_argument("--lkh3-runs", type=int, default=10)
     parser.add_argument("--solver-timeout-sec", type=float, default=None)
+    parser.add_argument(
+        "--skip-solvers",
+        action="store_true",
+        help="Generate instances only, without solver labels.",
+    )
     return parser
 
 
@@ -97,6 +105,7 @@ def main() -> None:
         lkh3_trials=args.lkh3_trials,
         lkh3_runs=args.lkh3_runs,
         solver_timeout_sec=args.solver_timeout_sec,
+        skip_solvers=args.skip_solvers,
     )
     written = generate_tsp_dataset(config)
     print(f"Wrote {written} TSP instances to {config.output_path}")

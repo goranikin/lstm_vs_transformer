@@ -20,10 +20,11 @@ class MISGenerationConfig(BaseModel):
     solvers: tuple[str, ...] = ("kamis", "gurobi")
     kamis_executable: str | None = None
     solver_time_limit_sec: float | None = None
+    skip_solvers: bool = False
 
     @model_validator(mode="after")
     def validate_solvers(self) -> Self:
-        if not self.solvers:
+        if not self.skip_solvers and not self.solvers:
             raise ValueError("at least one solver must be requested")
         return self
 
@@ -49,21 +50,23 @@ def iter_mis_records(config: MISGenerationConfig) -> Iterator[dict[str, Any]]:
             seed,
         )
         edges = adjacency_to_edges(adjacency)
-        yield {
+        record: dict[str, Any] = {
             "problem": "mis",
             "index": index,
             "seed": seed,
             "num_nodes": config.num_nodes,
             "edge_probability": config.edge_probability,
             "edges": [[u, v] for u, v in edges],
-            "solutions": solve_with_algorithms(
+        }
+        if not config.skip_solvers:
+            record["solutions"] = solve_with_algorithms(
                 adjacency,
                 algorithms=config.solvers,
                 kamis_executable=config.kamis_executable,
                 seed=seed,
                 time_limit_sec=config.solver_time_limit_sec,
-            ),
-        }
+            )
+        yield record
 
 
 def generate_mis_dataset(config: MISGenerationConfig) -> int:
@@ -87,6 +90,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--kamis-executable", type=str, default=None)
     parser.add_argument("--solver-time-limit-sec", type=float, default=None)
+    parser.add_argument(
+        "--skip-solvers",
+        action="store_true",
+        help="Generate instances only, without solver labels.",
+    )
     return parser
 
 
@@ -101,6 +109,7 @@ def main() -> None:
         solvers=tuple(s.strip() for s in args.solvers.split(",") if s.strip()),
         kamis_executable=args.kamis_executable,
         solver_time_limit_sec=args.solver_time_limit_sec,
+        skip_solvers=args.skip_solvers,
     )
     written = generate_mis_dataset(config)
     print(f"Wrote {written} MIS instances to {config.output_path}")
